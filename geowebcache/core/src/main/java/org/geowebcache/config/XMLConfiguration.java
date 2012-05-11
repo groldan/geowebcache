@@ -67,6 +67,7 @@ import org.geowebcache.filter.parameters.RegexParameterFilter;
 import org.geowebcache.filter.parameters.StringParameterFilter;
 import org.geowebcache.filter.request.CircularExtentFilter;
 import org.geowebcache.filter.request.FileRasterFilter;
+import org.geowebcache.filter.request.GeometryFilter;
 import org.geowebcache.filter.request.WMSRasterFilter;
 import org.geowebcache.grid.GridSet;
 import org.geowebcache.grid.GridSetBroker;
@@ -89,7 +90,15 @@ import org.w3c.dom.Node;
 import org.xml.sax.SAXException;
 
 import com.thoughtworks.xstream.XStream;
+import com.thoughtworks.xstream.converters.Converter;
+import com.thoughtworks.xstream.converters.MarshallingContext;
+import com.thoughtworks.xstream.converters.UnmarshallingContext;
+import com.thoughtworks.xstream.io.HierarchicalStreamReader;
+import com.thoughtworks.xstream.io.HierarchicalStreamWriter;
 import com.thoughtworks.xstream.io.xml.DomReader;
+import com.vividsolutions.jts.geom.Geometry;
+import com.vividsolutions.jts.io.ParseException;
+import com.vividsolutions.jts.io.WKTReader;
 
 /**
  * XMLConfiguration class responsible for reading/writing layer configurations to and from XML file
@@ -142,8 +151,7 @@ public class XMLConfiguration implements Configuration {
      * Constructor that will look for {@code geowebcache.xml} at the directory defined by
      * {@code storageDirFinder}
      * 
-     * @param appCtx
-     *            use to lookup {@link XMLConfigurationProvider} extenions, may be {@code null}
+     * @param appCtx use to lookup {@link XMLConfigurationProvider} extenions, may be {@code null}
      * @param defaultStorage
      * @throws ConfigurationException
      */
@@ -229,9 +237,8 @@ public class XMLConfiguration implements Configuration {
      * Allows to set the location of the template file to create geowebcache.xml from when it's not
      * found in the cache directory.
      * 
-     * @param templateLocation
-     *            location of the template geowebcache.xml file, must be a classpath location. If
-     *            not set defaults to /geowebcache.xml
+     * @param templateLocation location of the template geowebcache.xml file, must be a classpath
+     *        location. If not set defaults to /geowebcache.xml
      */
     public void setTemplate(final String templateLocation) {
         this.templateLocation = templateLocation;
@@ -497,6 +504,7 @@ public class XMLConfiguration implements Configuration {
         xs.alias("circularExtentFilter", CircularExtentFilter.class);
         xs.alias("wmsRasterFilter", WMSRasterFilter.class);
         xs.alias("fileRasterFilter", FileRasterFilter.class);
+        xs.alias("geometryFilter", GeometryFilter.class);
 
         xs.alias("expirationRule", ExpirationRule.class);
         xs.useAttributeFor(ExpirationRule.class, "minZoom");
@@ -509,6 +517,7 @@ public class XMLConfiguration implements Configuration {
         xs.alias("serviceInformation", ServiceInformation.class);
         xs.alias("contactInformation", ContactInformation.class);
 
+        xs.registerConverter(new GeometryWKTConverter());
         if (context != null) {
             /*
              * Look up XMLConfigurationProvider extension points and let them contribute to the
@@ -566,11 +575,9 @@ public class XMLConfiguration implements Configuration {
     }
 
     /**
-     * @param tl
-     *            the layer to add to this configuration
+     * @param tl the layer to add to this configuration
      * @return
-     * @throws IllegalArgumentException
-     *             if a layer named the same than {@code tl} already exists
+     * @throws IllegalArgumentException if a layer named the same than {@code tl} already exists
      * @see org.geowebcache.config.Configuration#addLayer(org.geowebcache.layer.TileLayer)
      */
     public synchronized void addLayer(TileLayer tl) throws IllegalArgumentException {
@@ -593,8 +600,7 @@ public class XMLConfiguration implements Configuration {
     /**
      * Method responsible for modifying an existing layer.
      * 
-     * @param tl
-     *            the new layer to overwrite the existing layer
+     * @param tl the new layer to overwrite the existing layer
      * @throws NoSuchElementException
      * @see org.geowebcache.config.Configuration#modifyLayer(org.geowebcache.layer.TileLayer)
      */
@@ -655,8 +661,7 @@ public class XMLConfiguration implements Configuration {
     /**
      * Removes and returns the gridset configuration named {@code gridsetName}.
      * 
-     * @param gridsetName
-     *            the name of the gridset to remove
+     * @param gridsetName the name of the gridset to remove
      * @return the removed griset, or {@code null} if no such gridset exists
      */
     public synchronized XMLGridSet removeGridset(final String gridsetName) {
@@ -674,8 +679,7 @@ public class XMLConfiguration implements Configuration {
     /**
      * Method responsible for loading xml configuration file and parsing it into a W3C DOM Document
      * 
-     * @param file
-     *            the file contaning the layer configurations
+     * @param file the file contaning the layer configurations
      * @return W3C DOM Document
      */
     static Node loadDocument(InputStream xmlFile) throws ConfigurationException, IOException {
@@ -994,6 +998,52 @@ public class XMLConfiguration implements Configuration {
 
     public String getVersion() {
         return gwcConfig.getVersion();
+    }
+
+    public static class GeometryWKTConverter implements Converter {
+
+        /**
+         * @see com.thoughtworks.xstream.converters.ConverterMatcher#canConvert(java.lang.Class)
+         */
+        public boolean canConvert(Class type) {
+            return Geometry.class.isAssignableFrom(type);
+        }
+
+        /**
+         * @see com.thoughtworks.xstream.converters.Converter#marshal(java.lang.Object,
+         *      com.thoughtworks.xstream.io.HierarchicalStreamWriter,
+         *      com.thoughtworks.xstream.converters.MarshallingContext)
+         */
+        public void marshal(Object source, HierarchicalStreamWriter writer,
+                MarshallingContext context) {
+
+            Geometry geom = (Geometry) source;
+            if (geom == null) {
+                return;
+            }
+            String wkt = geom.toText();
+            writer.setValue(wkt);
+        }
+
+        /**
+         * @see com.thoughtworks.xstream.converters.Converter#unmarshal(com.thoughtworks.xstream.io.HierarchicalStreamReader,
+         *      com.thoughtworks.xstream.converters.UnmarshallingContext)
+         */
+        public Object unmarshal(HierarchicalStreamReader reader, UnmarshallingContext context) {
+
+            String wkt = reader.getValue();
+            if (wkt == null || wkt.trim().length() == 0) {
+                return null;
+            }
+            Geometry geometry;
+            try {
+                geometry = new WKTReader().read(wkt);
+            } catch (ParseException e) {
+                throw new IllegalArgumentException("Unable to parse Geometry WKT: '" + wkt + "'", e);
+            }
+            return geometry;
+        }
+
     }
 
 }
