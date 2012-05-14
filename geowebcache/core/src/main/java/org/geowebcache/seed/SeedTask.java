@@ -28,6 +28,7 @@ import org.apache.commons.logging.LogFactory;
 import org.geowebcache.GeoWebCacheException;
 import org.geowebcache.conveyor.ConveyorTile;
 import org.geowebcache.filter.request.RequestFilter;
+import org.geowebcache.filter.request.RequestFilterException;
 import org.geowebcache.layer.TileLayer;
 import org.geowebcache.layer.wms.WMSLayer;
 import org.geowebcache.storage.StorageBroker;
@@ -122,8 +123,14 @@ class SeedTask extends GWCTask {
 
             ConveyorTile tile = new ConveyorTile(storageBroker, layerName, tr.getGridSetId(), gridLoc,
                     tr.getMimeType(), fullParameters, null, null);
-
+            tile.setTileLayer(tl);
             for (int fetchAttempt = 0; fetchAttempt <= tileFailureRetryCount; fetchAttempt++) {
+                try {
+                    // ignore the tile if a request filter says it shall not be seeded
+                    tl.applyRequestFilters(tile);
+                } catch (RequestFilterException e) {
+                    break;
+                }
                 try {
                     checkInterrupted();
                     tl.seedTile(tile, tryCache);
