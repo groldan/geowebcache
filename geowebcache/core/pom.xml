@@ -60,6 +60,27 @@
       <artifactId>xstream</artifactId>
     </dependency>
 
+    <dependency>
+     <groupId>xml-apis</groupId>
+     <artifactId>xml-apis-xerces</artifactId>
+    </dependency>
+    <dependency>
+     <groupId>xml-apis</groupId>
+     <artifactId>xmlParserAPIs</artifactId>
+    </dependency>
+    <dependency>
+     <groupId>xerces</groupId>
+     <artifactId>xmlParserAPIs</artifactId>
+    </dependency>
+    <dependency>
+     <groupId>xerces</groupId>
+     <artifactId>xercesImpl</artifactId>
+    </dependency>
+    <dependency>
+     <groupId>xalan</groupId>
+     <artifactId>xalan</artifactId>
+    </dependency>
+
     <!-- Spring dependencies -->
     <dependency>
       <groupId>org.springframework</groupId>
