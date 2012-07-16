@@ -479,6 +479,7 @@ public class GeoWebCacheDispatcher extends AbstractController {
      */
     private void writeData(ConveyorTile tile) throws IOException {
         HttpServletResponse servletResp = tile.servletResp;
+        final HttpServletRequest servletReq = tile.servletReq;
 
         final CacheResult cacheResult = tile.getCacheResult();
         int httpCode = HttpServletResponse.SC_OK;
@@ -497,7 +498,7 @@ public class GeoWebCacheDispatcher extends AbstractController {
         servletResp.setHeader("geowebcache-crs", gridSubset.getSRS().toString());
 
         final long tileTimeStamp = tile.getTSCreated();
-        final String ifModSinceHeader = tile.servletReq.getHeader("If-Modified-Since");
+        final String ifModSinceHeader = servletReq.getHeader("If-Modified-Since");
         // commons-httpclient's DateUtil can encode and decode timestamps formatted as per RFC-1123,
         // which is one of the three formats allowed for Last-Modified and If-Modified-Since headers
         // (e.g. 'Sun, 06 Nov 1994 08:49:37 GMT'). See
@@ -527,7 +528,7 @@ public class GeoWebCacheDispatcher extends AbstractController {
         }
 
         if (httpCode == HttpServletResponse.SC_OK && tile.getLayer().useETags()) {
-            String ifNoneMatch = tile.servletReq.getHeader("If-None-Match");
+            String ifNoneMatch = servletReq.getHeader("If-None-Match");
             String hexTag = Long.toHexString(tileTimeStamp);
 
             if (ifNoneMatch != null) {
@@ -538,7 +539,7 @@ public class GeoWebCacheDispatcher extends AbstractController {
             }
 
             // If we get here, we want ETags but the client did not have the tile.
-            tile.servletResp.setHeader("ETag", hexTag);
+            servletResp.setHeader("ETag", hexTag);
         }
 
         writeFixedResponse(servletResp, httpCode, mimeType, blob, cacheResult, contentLength);
