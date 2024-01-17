@@ -14,7 +14,7 @@
  */
 package org.geowebcache.filter.request;
 
-import javax.servlet.http.HttpServletResponse;
+import jakarta.servlet.http.HttpServletResponse;
 import org.geowebcache.io.Resource;
 
 public class RequestFilterException extends Exception {

@@ -19,6 +19,7 @@
 package org.geowebcache.rest.controller;
 
 import com.google.common.base.Splitter;
+import jakarta.servlet.http.HttpServletRequest;
 import java.io.BufferedReader;
 import java.io.InputStream;
 import java.io.InputStreamReader;
@@ -26,7 +27,6 @@ import java.io.UnsupportedEncodingException;
 import java.net.URLDecoder;
 import java.util.Map;
 import java.util.stream.Collectors;
-import javax.servlet.http.HttpServletRequest;
 import org.geowebcache.GeoWebCacheException;
 import org.geowebcache.config.DefaultingConfiguration;
 import org.geowebcache.rest.service.FormService;

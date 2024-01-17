@@ -15,6 +15,7 @@
 package org.geowebcache.io;
 
 import com.google.common.base.Preconditions;
+import jakarta.annotation.Nullable;
 import java.io.IOException;
 import java.nio.charset.Charset;
 import java.util.Collections;
@@ -22,7 +23,6 @@ import java.util.Deque;
 import java.util.HashMap;
 import java.util.LinkedList;
 import java.util.Map;
-import javax.annotation.Nullable;
 import javax.annotation.ParametersAreNonnullByDefault;
 
 @ParametersAreNonnullByDefault

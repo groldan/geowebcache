@@ -14,6 +14,7 @@
  */
 package org.geowebcache.util;
 
+import jakarta.servlet.ServletContext;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Objects;
@@ -21,7 +22,6 @@ import java.util.logging.Level;
 import java.util.logging.Logger;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
-import javax.servlet.ServletContext;
 import org.geotools.util.logging.Logging;
 import org.springframework.context.ApplicationContext;
 import org.springframework.web.context.WebApplicationContext;

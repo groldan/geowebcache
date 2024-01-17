@@ -14,6 +14,7 @@
  */
 package org.geowebcache.grid;
 
+import jakarta.annotation.Nullable;
 import java.util.Collection;
 import java.util.HashMap;
 import java.util.Iterator;
@@ -24,7 +25,6 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.logging.Logger;
 import java.util.stream.Collectors;
-import javax.annotation.Nullable;
 import org.geotools.util.logging.Logging;
 import org.geowebcache.GeoWebCacheExtensions;
 import org.geowebcache.config.ConfigurationAggregator;

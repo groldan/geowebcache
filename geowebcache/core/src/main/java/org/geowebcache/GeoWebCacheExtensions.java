@@ -14,6 +14,7 @@
  */
 package org.geowebcache;
 
+import jakarta.servlet.ServletContext;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -22,7 +23,6 @@ import java.util.WeakHashMap;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 import java.util.stream.Collectors;
-import javax.servlet.ServletContext;
 import org.geotools.util.logging.Logging;
 import org.geowebcache.config.BaseConfiguration;
 import org.geowebcache.util.GWCVars;

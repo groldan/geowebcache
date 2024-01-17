@@ -17,8 +17,8 @@ package org.geowebcache;
 import static org.geowebcache.TestHelpers.hasStatus;
 import static org.junit.Assert.assertThat;
 
+import jakarta.servlet.http.HttpServletResponse;
 import java.util.Collections;
-import javax.servlet.http.HttpServletResponse;
 import org.easymock.EasyMock;
 import org.easymock.IMocksControl;
 import org.easymock.MockType;

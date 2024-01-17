@@ -14,6 +14,9 @@
  */
 package org.geowebcache.service.wms;
 
+import jakarta.servlet.ServletOutputStream;
+import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletResponse;
 import java.awt.Color;
 import java.awt.Graphics2D;
 import java.awt.RenderingHints;
@@ -29,9 +32,6 @@ import java.util.Map;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 import javax.media.jai.PlanarImage;
-import javax.servlet.ServletOutputStream;
-import javax.servlet.http.HttpServletRequest;
-import javax.servlet.http.HttpServletResponse;
 import org.geotools.image.util.ImageUtilities;
 import org.geotools.util.logging.Logging;
 import org.geowebcache.GeoWebCacheException;

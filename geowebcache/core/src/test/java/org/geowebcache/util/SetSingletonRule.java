@@ -1,9 +1,9 @@
 package org.geowebcache.util;
 
+import jakarta.annotation.Nullable;
 import java.util.Objects;
 import java.util.function.Consumer;
 import java.util.function.Supplier;
-import javax.annotation.Nullable;
 import org.junit.rules.ExternalResource;
 
 /**

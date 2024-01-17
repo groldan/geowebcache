@@ -15,9 +15,9 @@
 package org.geowebcache.filter.parameters;
 
 import com.google.common.collect.Lists;
+import jakarta.annotation.Nullable;
 import java.util.List;
 import java.util.Objects;
-import javax.annotation.Nullable;
 
 public abstract class CaseNormalizingParameterFilter extends ParameterFilter {
     private static final long serialVersionUID = 1761619452677321350L;

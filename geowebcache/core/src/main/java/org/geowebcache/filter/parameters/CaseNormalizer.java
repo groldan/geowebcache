@@ -16,10 +16,10 @@ package org.geowebcache.filter.parameters;
 
 import com.google.common.base.Function;
 import com.thoughtworks.xstream.annotations.XStreamAlias;
+import jakarta.annotation.Nullable;
 import java.io.Serializable;
 import java.util.Locale;
 import java.util.Objects;
-import javax.annotation.Nullable;
 
 /**
  * Normalizes the case of strings based on a particular locale.

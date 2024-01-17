@@ -16,10 +16,10 @@ package org.geowebcache.filter.parameters;
 
 import com.google.common.base.Objects;
 import com.google.common.base.Preconditions;
+import jakarta.annotation.Nullable;
 import java.io.Serializable;
 import java.util.List;
 import java.util.Optional;
-import javax.annotation.Nullable;
 import javax.annotation.ParametersAreNonnullByDefault;
 
 /** A filter for a WMS parameter that ensure that it fits within a finite set of defined values. */

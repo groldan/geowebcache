@@ -14,7 +14,7 @@
  */
 package org.geowebcache.filter.security;
 
-import javax.annotation.Nullable;
+import jakarta.annotation.Nullable;
 import org.geowebcache.GeoWebCacheException;
 import org.geowebcache.grid.BoundingBox;
 import org.geowebcache.grid.SRS;

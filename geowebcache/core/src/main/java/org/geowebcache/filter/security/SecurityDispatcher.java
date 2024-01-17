@@ -14,9 +14,9 @@
  */
 package org.geowebcache.filter.security;
 
+import jakarta.annotation.Nullable;
 import java.util.Collection;
 import java.util.Objects;
-import javax.annotation.Nullable;
 import org.geowebcache.GeoWebCacheException;
 import org.geowebcache.GeoWebCacheExtensions;
 import org.geowebcache.conveyor.ConveyorTile;
