@@ -34,6 +34,7 @@ import org.geowebcache.io.ByteArrayResource;
 import org.geowebcache.io.Resource;
 import org.geowebcache.storage.BlobStore;
 import org.geowebcache.storage.StorageBrokerTest;
+import org.geowebcache.storage.StorageException;
 import org.geowebcache.storage.TileObject;
 import org.geowebcache.storage.blobstore.file.FileBlobStore;
 import org.geowebcache.storage.blobstore.memory.guava.GuavaCacheProvider;
@@ -288,8 +289,13 @@ public class MemoryBlobStoreTest {
             Files.createDirectories(fh.toPath());
         }
 
-        return new FileBlobStore(
-                StorageBrokerTest.findTempDir() + File.separator + TEST_BLOB_DIR_NAME);
+        String rootPath = StorageBrokerTest.findTempDir() + File.separator + TEST_BLOB_DIR_NAME;
+        return new FileBlobStore(rootPath) {
+            @Override
+            public void clear() throws StorageException {
+                // no-op, FileBlobStore bluntly throws StorageException
+            }
+        };
     }
 
     /**

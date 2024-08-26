@@ -30,9 +30,6 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
-import java.util.concurrent.locks.ReentrantReadWriteLock;
-import java.util.concurrent.locks.ReentrantReadWriteLock.ReadLock;
-import java.util.concurrent.locks.ReentrantReadWriteLock.WriteLock;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 import org.geotools.util.logging.Logging;
@@ -113,7 +110,7 @@ public class GuavaCacheProvider implements CacheProvider {
     private AtomicLong actualOperations;
 
     /** Internal concurrent Set used for saving the names of the Layers that must not be cached */
-    private final Set<String> layers;
+    private final Set<String> layersUncached;
 
     /** Cache total memory in Mb */
     private long maxMemory = 0L;
@@ -125,7 +122,7 @@ public class GuavaCacheProvider implements CacheProvider {
 
     public GuavaCacheProvider(CacheConfiguration config) {
         // Initialization of the Layer set and of the Atomic parameters
-        layers = Collections.newSetFromMap(new ConcurrentHashMap<>());
+        layersUncached = ConcurrentHashMap.newKeySet();
         configured = new AtomicBoolean(false);
         actualOperations = new AtomicLong(0);
         configure(config);
@@ -265,7 +262,7 @@ public class GuavaCacheProvider implements CacheProvider {
                     LOGGER.fine("Checking if the layer must not be cached");
                 }
                 // Check if the layer must be cached
-                if (layers.contains(obj.getLayerName())) {
+                if (layersUncached.contains(obj.getLayerName())) {
                     // The layer must not be cached
                     return null;
                 }
@@ -298,7 +295,7 @@ public class GuavaCacheProvider implements CacheProvider {
                     LOGGER.fine("Checking if the layer must not be cached");
                 }
                 // Check if the layer must be cached
-                if (layers.contains(obj.getLayerName())) {
+                if (layersUncached.contains(obj.getLayerName())) {
                     // The layer must not be cached
                     return;
                 }
@@ -331,7 +328,7 @@ public class GuavaCacheProvider implements CacheProvider {
                     LOGGER.fine("Checking if the layer must not be cached");
                 }
                 // Check if the layer must be cached
-                if (layers.contains(obj.getLayerName())) {
+                if (layersUncached.contains(obj.getLayerName())) {
                     // The layer must not be cached
                     return;
                 }
@@ -363,7 +360,7 @@ public class GuavaCacheProvider implements CacheProvider {
                     LOGGER.fine("Checking if the layer must not be cached");
                 }
                 // Check if the layer must be cached
-                if (layers.contains(layername)) {
+                if (layersUncached.contains(layername)) {
                     // The layer must not be cached
                     return;
                 }
@@ -430,7 +427,7 @@ public class GuavaCacheProvider implements CacheProvider {
             if (LOGGER.isLoggable(Level.FINE)) {
                 LOGGER.fine("Removing Layers");
             }
-            layers.clear();
+            layersUncached.clear();
             // Shutdown the current Executor service
             if (scheduledPool != null) {
                 scheduledPool.shutdown();
@@ -538,7 +535,7 @@ public class GuavaCacheProvider implements CacheProvider {
                     LOGGER.fine("Adding Layer:" + layername + " to avoid cache");
                 }
                 // Adds the layer which should not be cached
-                layers.add(layername);
+                layersUncached.add(layername);
             } finally {
                 // Decrement the number of current operations.
                 actualOperations.decrementAndGet();
@@ -560,7 +557,7 @@ public class GuavaCacheProvider implements CacheProvider {
                     LOGGER.fine("Removing Layer:" + layername + " to avoid cache");
                 }
                 // Configure a Layer for being cached again
-                layers.remove(layername);
+                layersUncached.remove(layername);
             } finally {
                 // Decrement the number of current operations.
                 actualOperations.decrementAndGet();
@@ -582,7 +579,7 @@ public class GuavaCacheProvider implements CacheProvider {
                     LOGGER.fine("Checking if Layer:" + layername + " must not be cached");
                 }
                 // Check if the layer must not be cached
-                return layers.contains(layername);
+                return layersUncached.contains(layername);
             } finally {
                 // Decrement the number of current operations.
                 actualOperations.decrementAndGet();
@@ -611,109 +608,33 @@ public class GuavaCacheProvider implements CacheProvider {
      * @author Nicola Lagomarsini, GeoSolutions
      */
     static class LayerMap {
-
-        /** {@link ReentrantReadWriteLock} used for handling concurrency */
-        private final ReentrantReadWriteLock lock;
-
-        /** {@link WriteLock} used when trying to change the map */
-        private final WriteLock writeLock;
-
-        /** {@link ReadLock} used when accessing the map */
-        private final ReadLock readLock;
-
         /** MultiMap containing the {@link TileObject} keys for the Layers */
         private final ConcurrentHashMap<String, Set<String>> layerMap = new ConcurrentHashMap<>();
 
-        public LayerMap() {
-            // Lock initialization
-            lock = new ReentrantReadWriteLock(true);
-            writeLock = lock.writeLock();
-            readLock = lock.readLock();
-        }
-
         /** Insertion of a {@link TileObject} key in the map for the associated Layer. */
-        // not sure why locking is used on top of concurrent structures to start with... just
-        // ignoring to move on, but imho all locks should be removed and concurrent structure
-        // be used as intended (e.g., putIfAbsent and the like
         @SuppressFBWarnings({
             "AT_OPERATION_SEQUENCE_ON_CONCURRENT_ABSTRACTION",
             "UL_UNRELEASED_LOCK",
             "UL_UNRELEASED_LOCK_EXCEPTION_PATH"
         })
         public void putTile(String layer, String id) {
-            // ReadLock is used because we are only accessing the map
-            readLock.lock();
-            Set<String> tileKeys = layerMap.get(layer);
-            if (tileKeys == null) {
-                if (LOGGER.isLoggable(Level.FINE)) {
-                    LOGGER.fine("No KeySet for Layer: " + layer);
-                }
-                // If the Map is not present, we must add it
-                // So we do the unlock and try to acquire the writeLock
-                readLock.unlock();
-                writeLock.lock();
-                try {
-                    // Check again if the tileKey has not been added already
-                    tileKeys = layerMap.get(layer);
-                    if (tileKeys == null) {
-                        if (LOGGER.isLoggable(Level.FINE)) {
-                            LOGGER.fine("Creating new KeySet for Layer: " + layer);
-                        }
-                        // If no key is present then a new KeySet is created and then added to the
-                        // multimap
-                        tileKeys = new ConcurrentSkipListSet<>();
-                        layerMap.put(layer, tileKeys);
-                    }
-                    // Downgrade by acquiring read lock before releasing write lock
-                    readLock.lock();
-                } finally {
-                    // Release the writeLock
-                    writeLock.unlock();
-                }
-            }
-            try {
-                if (LOGGER.isLoggable(Level.FINE)) {
-                    LOGGER.fine("Add the TileObject id to the Map");
-                }
-                // Finally the tile key is added.
-                tileKeys.add(id);
-            } finally {
-                readLock.unlock();
-            }
+            Set<String> tileKeys =
+                    layerMap.computeIfAbsent(layer, l -> new ConcurrentSkipListSet<>());
+            tileKeys.add(id);
         }
 
         /** Removal of a {@link TileObject} key in the map for the associated Layer. */
         public void removeTile(String layer, String id) {
-            // ReadLock is used because we are only accessing the map
-            readLock.lock();
-            try {
-                // KeySet associated to the image
-                Set<String> tileKeys = layerMap.get(layer);
-                if (tileKeys != null) {
-                    if (LOGGER.isLoggable(Level.FINE)) {
-                        LOGGER.fine("Remove TileObject id to the Map");
-                    }
-                    // Removal of the keys
-                    tileKeys.remove(id);
-                    // If the KeySet is empty then it is removed from the multimap
-                    if (tileKeys.isEmpty()) {
-                        readLock.unlock();
-                        writeLock.lock();
-                        try {
-                            if (tileKeys.isEmpty()) {
-                                // Here writeLock is acquired again, but it is reentrant
-                                removeLayer(layer);
-                            }
-                            // Downgrade by acquiring read lock before releasing write lock
-                            readLock.lock();
-                        } finally {
-                            writeLock.unlock();
+            layerMap.computeIfPresent(
+                    layer,
+                    (layerName, tileKeys) -> {
+                        tileKeys.remove(id);
+                        if (tileKeys.isEmpty()) {
+                            // removes the layer mapping
+                            return null;
                         }
-                    }
-                }
-            } finally {
-                readLock.unlock();
-            }
+                        return tileKeys;
+                    });
         }
 
         /**
@@ -722,20 +643,7 @@ public class GuavaCacheProvider implements CacheProvider {
          * @return the keys associated to the Layer
          */
         public Set<String> removeLayer(String layer) {
-            writeLock.lock();
-            try {
-                if (LOGGER.isLoggable(Level.FINE)) {
-                    LOGGER.fine("Removing KeySet for Layer: " + layer);
-                }
-                // Get the Set from the map
-                Set<String> layers = layerMap.get(layer);
-                // Removes the set from the map
-                layerMap.remove(layer);
-                // Returns the set
-                return layers;
-            } finally {
-                writeLock.unlock();
-            }
+            return layerMap.remove(layer);
         }
     }
 }
