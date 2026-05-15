@@ -29,6 +29,7 @@ import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 import javax.sql.DataSource;
@@ -47,11 +48,13 @@ import org.geowebcache.util.SuppressFBWarnings;
 import org.springframework.dao.ConcurrencyFailureException;
 import org.springframework.dao.DataAccessException;
 import org.springframework.dao.DeadlockLoserDataAccessException;
+import org.springframework.dao.PessimisticLockingFailureException;
 import org.springframework.jdbc.core.RowMapper;
 import org.springframework.jdbc.datasource.DataSourceTransactionManager;
 import org.springframework.transaction.TransactionStatus;
 import org.springframework.transaction.support.TransactionCallback;
 import org.springframework.transaction.support.TransactionCallbackWithoutResult;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.transaction.support.TransactionTemplate;
 
 /**
@@ -86,6 +89,30 @@ public class JDBCQuotaStore implements QuotaStore {
 
     /** Max number of attempts we do to insert/update page stats in race-free mode */
     int maxLoops = 100;
+
+    /**
+     * Max attempts when a {@code SERIALIZABLE} transaction aborts due to a concurrency conflict
+     * ({@link PessimisticLockingFailureException}).
+     *
+     * <p>Postgres SSI and Oracle ORA-08176 abort transactions that the application is expected to retry; this counter
+     * bounds how many times {@link #executeWithRetry(TransactionCallback)} re-attempts before giving up.
+     */
+    int maxTransactionAttempts = 10;
+
+    /**
+     * Initial backoff between transaction retries, in milliseconds. Doubles on each retry up to
+     * {@link #MAX_TRANSACTION_BACKOFF_MS}, with full jitter added to spread concurrent retriers.
+     */
+    long initialTransactionBackoffMs = 10L;
+
+    /** Cap on the exponential backoff between transaction retries, in milliseconds. */
+    private static final long MAX_TRANSACTION_BACKOFF_MS = 500L;
+
+    /** Oracle ORA-08176: consistent read failure; rollback data not available. */
+    private static final int ORA_08176 = 8176;
+
+    /** Oracle ORA-08177: can't serialize access for this transaction. */
+    private static final int ORA_08177 = 8177;
 
     /** The executor used for asynch requests */
     ExecutorService executor;
@@ -160,12 +187,15 @@ public class JDBCQuotaStore implements QuotaStore {
             throw new IllegalStateException(
                     "Please provide both the sql dialect and the data " + "source before calling inizialize");
         }
-        tt.execute(new TransactionCallbackWithoutResult() {
+        // DDL outside any wrapping transaction: Oracle auto-commits DDL and leaves the post-DDL
+        // SCN bookkeeping in a state where the first SERIALIZABLE read across recently-created
+        // indexes aborts with ORA-08176; HSQL also forces implicit commits around DDL. Postgres
+        // has fully transactional DDL and is unaffected, but the refactor is portably safe.
+        dialect.initializeTables(schema, jt);
+        executeWithRetry(new TransactionCallbackWithoutResult() {
 
             @Override
             protected void doInTransactionWithoutResult(TransactionStatus status) {
-                // setup the tables if necessary
-                dialect.initializeTables(schema, jt);
 
                 // get the existing table names
                 List<String> existingLayers =
@@ -201,7 +231,7 @@ public class JDBCQuotaStore implements QuotaStore {
     }
 
     private void createLayerInternal(final String layerName) {
-        tt.execute(new TransactionCallbackWithoutResult() {
+        executeWithRetry(new TransactionCallbackWithoutResult() {
 
             @Override
             protected void doInTransactionWithoutResult(TransactionStatus status) {
@@ -285,7 +315,7 @@ public class JDBCQuotaStore implements QuotaStore {
 
     @Override
     public void deleteLayer(final String layerName) {
-        tt.execute(new TransactionCallbackWithoutResult() {
+        executeWithRetry(new TransactionCallbackWithoutResult() {
 
             @Override
             protected void doInTransactionWithoutResult(TransactionStatus status) {
@@ -296,7 +326,7 @@ public class JDBCQuotaStore implements QuotaStore {
 
     @Override
     public void deleteGridSubset(final String layerName, final String gridSetId) {
-        tt.execute(new TransactionCallbackWithoutResult() {
+        executeWithRetry(new TransactionCallbackWithoutResult() {
 
             @Override
             protected void doInTransactionWithoutResult(TransactionStatus status) {
@@ -322,7 +352,7 @@ public class JDBCQuotaStore implements QuotaStore {
 
     public void deleteLayerInternal(final String layerName) {
         getUsedQuotaByLayerName(layerName);
-        tt.execute(new TransactionCallbackWithoutResult() {
+        executeWithRetry(new TransactionCallbackWithoutResult() {
 
             @Override
             protected void doInTransactionWithoutResult(TransactionStatus arg0) {
@@ -345,7 +375,7 @@ public class JDBCQuotaStore implements QuotaStore {
 
     @Override
     public void renameLayer(final String oldLayerName, final String newLayerName) throws InterruptedException {
-        tt.execute(new TransactionCallbackWithoutResult() {
+        executeWithRetry(new TransactionCallbackWithoutResult() {
 
             @Override
             protected void doInTransactionWithoutResult(TransactionStatus status) {
@@ -454,7 +484,7 @@ public class JDBCQuotaStore implements QuotaStore {
     public void addToQuotaAndTileCounts(
             final TileSet tileSet, final Quota quotaDiff, final Collection<PageStatsPayload> tileCountDiffs)
             throws InterruptedException {
-        tt.execute(new TransactionCallbackWithoutResult() {
+        executeWithRetry(new TransactionCallbackWithoutResult() {
 
             @Override
             protected void doInTransactionWithoutResult(TransactionStatus status) {
@@ -641,7 +671,7 @@ public class JDBCQuotaStore implements QuotaStore {
     @Override
     @SuppressWarnings("unchecked")
     public Future<List<PageStats>> addHitsAndSetAccesTime(final Collection<PageStatsPayload> statsUpdates) {
-        return executor.submit(() -> (List<PageStats>) tt.execute(new QuotaStoreCallback(statsUpdates)));
+        return executor.submit(() -> (List<PageStats>) executeWithRetry(new QuotaStoreCallback(statsUpdates)));
     }
 
     @Override
@@ -683,7 +713,7 @@ public class JDBCQuotaStore implements QuotaStore {
 
     @Override
     public PageStats setTruncated(final TilePage page) throws InterruptedException {
-        return (PageStats) tt.execute((TransactionCallback<Object>) status -> {
+        return (PageStats) executeWithRetry((TransactionCallback<Object>) status -> {
             if (log.isLoggable(Level.FINE)) {
                 log.info("Truncating page " + page);
             }
@@ -723,6 +753,110 @@ public class JDBCQuotaStore implements QuotaStore {
         // release the templates
         tt = null;
         jt = null;
+    }
+
+    /**
+     * Runs the given action in a SERIALIZABLE transaction, retrying with bounded exponential backoff if the underlying
+     * database aborts the transaction due to a concurrency conflict.
+     *
+     * <p>Postgres SSI ({@code SQLSTATE 40001}, translated by Spring to {@link PessimisticLockingFailureException}) and
+     * Oracle's analogous serialization failures are documented as retryable: SERIALIZABLE is defined in terms of
+     * application-level retry on abort. Without this layer, the queued-update consumer thread silently swallows the
+     * abort, dropping the batch of pending quota updates and letting the ledger drift out of sync with disk.
+     *
+     * <p>Non-concurrency exceptions are not retried. Other {@link ConcurrencyFailureException} subclasses thrown by
+     * inner SQL-level loops (their own race-handling exhaustion) are also not retried here; those loops have already
+     * done their work and re-attempting at the transaction level would only amplify cost.
+     *
+     * <p>When invoked from a method that is already inside a wrapping transaction (e.g. {@link #createLayerInternal}
+     * called from {@link #initialize}), the retry loop is skipped and the exception is allowed to propagate. Spring's
+     * {@code PROPAGATION_REQUIRED} reuses the outer transaction, so retrying here would just re-fail against the same
+     * stale snapshot - the only retry that can recover is the outer one, which will start a fresh transaction.
+     */
+    private <T> T executeWithRetry(TransactionCallback<T> action) {
+        if (TransactionSynchronizationManager.isActualTransactionActive()) {
+            // Nested call: let aborts bubble up to the outer retry, which can take a fresh snapshot.
+            return tt.execute(action);
+        }
+        long backoff = initialTransactionBackoffMs;
+        for (int attempt = 1; ; attempt++) {
+            try {
+                return tt.execute(action);
+            } catch (DataAccessException e) {
+                if (!isTransactionAbort(e)) {
+                    throw e;
+                }
+                if (attempt >= maxTransactionAttempts) {
+                    log.log(
+                            Level.WARNING,
+                            "DiskQuota transaction failed after " + attempt + " attempts: " + e.getMessage(),
+                            e);
+                    throw e;
+                }
+                long sleep = backoff + ThreadLocalRandom.current().nextLong(backoff);
+                try {
+                    Thread.sleep(sleep);
+                } catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                    throw e;
+                }
+                if (log.isLoggable(Level.FINE)) {
+                    log.fine("DiskQuota transaction conflict on attempt "
+                            + attempt
+                            + "/"
+                            + maxTransactionAttempts
+                            + ", retrying after "
+                            + sleep
+                            + "ms: "
+                            + e.getMessage());
+                }
+                backoff = Math.min(backoff * 2, MAX_TRANSACTION_BACKOFF_MS);
+            }
+        }
+    }
+
+    /**
+     * Returns {@code true} if any throwable in the cause chain is a concurrency-driven transaction abort that the
+     * application is expected to retry. {@link org.geowebcache.diskquota.jdbc.SimpleJdbcTemplate SimpleJdbcTemplate}
+     * wraps Spring's translated exceptions in {@link ParametricDataAccessException}, so the actual abort type is
+     * typically a cause, not the top-level throwable.
+     *
+     * <p>Recognizes three families:
+     *
+     * <ul>
+     *   <li>Spring's {@link PessimisticLockingFailureException} (covers Postgres SSI aborts; Spring translates SQLSTATE
+     *       40001 to {@link org.springframework.dao.CannotAcquireLockException}).
+     *   <li>Any {@link SQLException} whose {@code SQLState} class is {@code "40"} (transaction rollback, including
+     *       serialization failures and deadlocks). Catches HSQL's {@link java.sql.SQLTransactionRollbackException},
+     *       which Spring translates to a bare {@link ConcurrencyFailureException} rather than to one of the
+     *       pessimistic-locking subclasses.
+     *   <li>Oracle vendor error codes that are explicit serialization-retry signals: ORA-08176 ({@code consistent read
+     *       failure; rollback data not available}) and ORA-08177 ({@code can't serialize access for this transaction}).
+     *       Spring's translator routes 08177 to the now-deprecated {@code CannotSerializeTransactionException} (a
+     *       sibling of {@code PessimisticLockingFailureException}, not a subclass) and leaves 08176 uncategorized;
+     *       matching by JDBC vendor code keeps the dialect-specific knowledge local to this predicate.
+     * </ul>
+     */
+    private static boolean isTransactionAbort(Throwable t) {
+        for (Throwable cause = t; cause != null; cause = cause.getCause()) {
+            if (cause instanceof PessimisticLockingFailureException) {
+                return true;
+            }
+            if (cause instanceof SQLException sqlException) {
+                String sqlState = sqlException.getSQLState();
+                if (sqlState != null && sqlState.startsWith("40")) {
+                    return true;
+                }
+                if (isRetryableOracleCode(sqlException.getErrorCode())) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    private static boolean isRetryableOracleCode(int errorCode) {
+        return errorCode == ORA_08176 || errorCode == ORA_08177;
     }
 
     /**
@@ -784,7 +918,7 @@ public class JDBCQuotaStore implements QuotaStore {
 
     @Override
     public void deleteParameters(final String layerName, final String parametersId) {
-        tt.execute(new TransactionCallbackWithoutResult() {
+        executeWithRetry(new TransactionCallbackWithoutResult() {
 
             @Override
             protected void doInTransactionWithoutResult(TransactionStatus status) {

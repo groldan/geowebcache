@@ -35,16 +35,17 @@ import javax.sql.DataSource;
 import org.junit.Test;
 
 /**
- * Verifies the legacy-to-current path in {@link SQLDialect#migrateForeignKeys} that drops the existing {@code TILEPAGE
- * -> TILESET} foreign key (declared with only {@code ON DELETE CASCADE}) and re-adds it with {@code ON UPDATE CASCADE
- * ON DELETE CASCADE}.
+ * Verifies the legacy-to-current path in {@link SQLDialect#migrateForeignKeys}: the dialect's current {@code TILEPAGE
+ * -> TILESET} foreign key shape is established by dropping the legacy form and re-adding it. The exact "current shape"
+ * varies per dialect - PG/H2/HSQL re-add it as {@code ON UPDATE CASCADE ON DELETE CASCADE}, Oracle as {@code ON DELETE
+ * CASCADE DEFERRABLE INITIALLY DEFERRED} - so subclasses describe their target via the
+ * {@link #expectedMigratedFkState()} / {@link #readFkState(ResultSet)} / {@link #legacyDdl(String)} hooks.
  *
- * <p>The current {@code JDBCQuotaStoreTest} suite always starts from fresh-DDL tables, so it only exercises the no-op
- * idempotent branch of the migration; this test class fills in the upgrade path.
+ * <p>The {@code JDBCQuotaStoreTest} suite always starts from fresh-DDL tables, so it only exercises the no-op
+ * idempotent branch. This class fills in the upgrade path.
  *
- * <p>Each test starts from a "legacy" schema built by stripping {@code " ON UPDATE CASCADE"} from the dialect's own
- * table-creation SQL (i.e. the pre-fix shape of the FK). Subclasses provide the dialect and a DataSource pointed at the
- * database under test.
+ * <p>Each test starts from a "legacy" schema built by stripping the dialect-specific migrated clause from the dialect's
+ * own table-creation SQL. Subclasses provide the dialect and a DataSource pointed at the database under test.
  */
 public abstract class AbstractForeignKeyMigrationTest {
 
@@ -65,49 +66,80 @@ public abstract class AbstractForeignKeyMigrationTest {
             dropIfExists(st, "TILESET");
             for (String table : dialect().TABLE_CREATION_MAP.keySet()) {
                 for (String ddl : dialect().TABLE_CREATION_MAP.get(table)) {
-                    String legacy = stripCascadeOnUpdate(ddl);
-                    st.execute(legacy);
+                    st.execute(legacyDdl(ddl));
                 }
             }
         }
     }
 
     /**
-     * Reproduces the pre-fix DDL by removing the {@code ON UPDATE CASCADE} clause that was added to the TILEPAGE FK.
+     * Hook: returns the dialect's current DDL with its migrated FK clause stripped, plus the schema placeholder
+     * substituted with the empty prefix.
+     *
+     * <p>Default strips {@code " ON UPDATE CASCADE"} (the PG/H2/HSQL target). Oracle overrides to strip
+     * {@code DEFERRABLE INITIALLY DEFERRED} instead.
      */
-    private static String stripCascadeOnUpdate(String ddl) {
+    protected String legacyDdl(String ddl) {
         return ddl.replace("${schema}", "").replace(" ON UPDATE CASCADE", "");
     }
 
-    private static void dropIfExists(Statement st, String table) {
+    /**
+     * Hook: returns the {@link DatabaseMetaData#getImportedKeys getImportedKeys} value the dialect's FK is expected to
+     * settle on after a successful migration.
+     *
+     * <p>Default {@link DatabaseMetaData#importedKeyCascade} (the {@code UPDATE_RULE} value used by PG/H2/HSQL). Oracle
+     * overrides to {@link DatabaseMetaData#importedKeyInitiallyDeferred} (a {@code DEFERRABILITY} value).
+     */
+    protected short expectedMigratedFkState() {
+        return (short) DatabaseMetaData.importedKeyCascade;
+    }
+
+    /**
+     * Hook: extracts the dialect's relevant FK metadata column from the current {@code getImportedKeys} row.
+     *
+     * <p>Default reads {@code UPDATE_RULE}. Oracle overrides to read {@code DEFERRABILITY}.
+     */
+    protected short readFkState(ResultSet rs) throws SQLException {
+        return rs.getShort("UPDATE_RULE");
+    }
+
+    /**
+     * Hook: returns the {@code DROP TABLE} statement that succeeds in dropping a table with FK dependents.
+     *
+     * <p>Default is the standard {@code DROP TABLE x CASCADE}. Oracle overrides to {@code DROP TABLE x CASCADE
+     * CONSTRAINTS}.
+     */
+    protected String dropTableSql(String table) {
+        return "DROP TABLE " + table + " CASCADE";
+    }
+
+    private void dropIfExists(Statement st, String table) {
         try {
-            st.execute("DROP TABLE " + table + " CASCADE");
+            st.execute(dropTableSql(table));
         } catch (SQLException ignored) {
             // table may not exist on the first run; the legacy CREATEs below recreate it
         }
     }
 
     @Test
-    public void migrateAddsOnUpdateCascadeToTilepageForeignKey() throws SQLException {
-        short ruleBefore = requireTilepageFkUpdateRule();
+    public void migrateRewritesTilepageForeignKey() throws SQLException {
+        short before = requireTilepageFkState();
         assertNotEquals(
-                "Legacy TILEPAGE FK should not yet be ON UPDATE CASCADE",
-                (short) DatabaseMetaData.importedKeyCascade,
-                ruleBefore);
+                "Legacy TILEPAGE FK should not yet be in its migrated state", expectedMigratedFkState(), before);
 
         dialect().migrateForeignKeys(null, new SimpleJdbcTemplate(dataSource()));
 
-        short ruleAfter = requireTilepageFkUpdateRule();
+        short after = requireTilepageFkState();
         assertEquals(
-                "Migration should rewrite TILEPAGE FK as ON UPDATE CASCADE",
-                (short) DatabaseMetaData.importedKeyCascade,
-                ruleAfter);
+                "Migration should rewrite the TILEPAGE FK to its current dialect shape",
+                expectedMigratedFkState(),
+                after);
     }
 
     /**
      * Simulates multiple JVMs starting at the same time against a shared database with the legacy FK still in place.
-     * Both call {@code migrateForeignKeys} concurrently; the migration must remain idempotent end-to-end - neither call
-     * should propagate an exception, and the final FK state must be cascade-on-update.
+     * All threads call {@code migrateForeignKeys} concurrently; the migration must remain idempotent end-to-end - no
+     * thread should propagate an exception, and the final FK state must be the migrated one.
      */
     @Test
     public void migrateIsConcurrentStartupSafe() throws Exception {
@@ -144,43 +176,43 @@ public abstract class AbstractForeignKeyMigrationTest {
         }
 
         assertEquals(
-                "After concurrent migration the FK should be ON UPDATE CASCADE",
-                (short) DatabaseMetaData.importedKeyCascade,
-                requireTilepageFkUpdateRule());
+                "After concurrent migration the FK should be in its migrated state",
+                expectedMigratedFkState(),
+                requireTilepageFkState());
     }
 
     @Test
     public void migrateIsIdempotent() throws SQLException {
         SimpleJdbcTemplate template = new SimpleJdbcTemplate(dataSource());
         dialect().migrateForeignKeys(null, template);
-        assertEquals((short) DatabaseMetaData.importedKeyCascade, requireTilepageFkUpdateRule());
+        assertEquals(expectedMigratedFkState(), requireTilepageFkState());
 
-        // Second invocation must be a no-op (FK already cascade-on-update).
+        // Second invocation must be a no-op (FK already in its migrated state).
         dialect().migrateForeignKeys(null, template);
-        assertEquals((short) DatabaseMetaData.importedKeyCascade, requireTilepageFkUpdateRule());
+        assertEquals(expectedMigratedFkState(), requireTilepageFkState());
     }
 
-    private short requireTilepageFkUpdateRule() throws SQLException {
-        Short rule = lookupTilepageFkUpdateRule();
-        assertNotNull("TILEPAGE -> TILESET foreign key not found in metadata", rule);
-        return rule;
+    private short requireTilepageFkState() throws SQLException {
+        Short state = lookupTilepageFkState();
+        assertNotNull("TILEPAGE -> TILESET foreign key not found in metadata", state);
+        return state;
     }
 
-    private Short lookupTilepageFkUpdateRule() throws SQLException {
+    private Short lookupTilepageFkState() throws SQLException {
         try (Connection cx = dataSource().getConnection()) {
             DatabaseMetaData dbmd = cx.getMetaData();
-            Short rule = findTilesetFkUpdateRule(dbmd, "tilepage");
-            return rule != null ? rule : findTilesetFkUpdateRule(dbmd, "TILEPAGE");
+            Short state = findTilesetFkState(dbmd, "tilepage");
+            return state != null ? state : findTilesetFkState(dbmd, "TILEPAGE");
         }
     }
 
-    private static Short findTilesetFkUpdateRule(DatabaseMetaData dbmd, String tableName) throws SQLException {
+    private Short findTilesetFkState(DatabaseMetaData dbmd, String tableName) throws SQLException {
         try (ResultSet rs = dbmd.getImportedKeys(null, null, tableName)) {
             while (rs.next()) {
                 String pkTable = rs.getString("PKTABLE_NAME");
                 String fkColumn = rs.getString("FKCOLUMN_NAME");
                 if ("TILESET".equalsIgnoreCase(pkTable) && "TILESET_ID".equalsIgnoreCase(fkColumn)) {
-                    return rs.getShort("UPDATE_RULE");
+                    return readFkState(rs);
                 }
             }
         }
